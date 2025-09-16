@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>أداة توزيع الاحتياجات (الإصدار المستقر)</title>
+    <title>أداة توزيع الاحتياجات - ص. علي الناجي</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         :root { 
@@ -20,6 +20,7 @@
         .step { margin-bottom: 25px; padding: 20px; border: 1px dashed #ccc; border-radius: 8px; background-color: var(--secondary-color); }
         label, h3 { font-weight: bold; margin-bottom: 8px; display: block; }
         input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+        input:disabled, button:disabled { background-color: #e9ecef; cursor: not-allowed; opacity: 0.7; }
         button { 
             font-size: 1em; border: none; border-radius: 5px; cursor: pointer; 
             color: white; padding: 10px 15px; margin-top: 5px;
@@ -43,7 +44,12 @@
         .button-group { display: flex; gap: 10px; margin-top: 15px; }
         footer { text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; font-size: 0.9em; color: #777; }
         footer p { margin: 2px 0; }
-        @media print { /* Print styles remain the same */ }
+        @media print {
+            body * { visibility: hidden; }
+            #results, #results * { visibility: visible; }
+            #results { position: absolute; left: 0; top: 0; width: 100%; box-shadow: none; border: none; }
+            .button-group, #searchInput, #searchBtn, label[for="searchInput"] { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -73,8 +79,26 @@
             <hr style="margin-top: 20px; border-color: #ccc;">
             <button id="clearCacheBtn" class="btn-danger" style="width: 100%;">مسح الذاكرة المحفوظة</button>
         </div>
-        <div id="step2" class="step hidden">
+        <div id="step2" class="step">
+            <h3>الخطوة 2: البحث والتوزيع</h3>
+            <label for="searchInput">ابحث عن المادة</label>
+            <input type="text" id="searchInput" list="itemsDatalist" placeholder="يرجى تحميل الملفات أولاً..." disabled>
+            <datalist id="itemsDatalist"></datalist>
+            <button id="searchBtn" style="background-color: var(--success-color); width:100%; margin-top:10px;" disabled>بحث</button>
+            <div id="results" class="hidden" style="margin-top: 20px;">
+                <h2 id="itemName" style="font-size: 1.5em;"></h2>
+                <div style="display: flex; justify-content: space-around; text-align: center; background: #fafafa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                    <div><h4 style="margin:0; color: #555;">إجمالي المطلوب</h4><p id="total-requested" style="font-size: 1.8em; font-weight: bold; margin: 5px 0; color: #d9534f;">0</p></div>
+                    <div><h4 style="margin:0; color: #555;">إجمالي المعتمد</h4><p id="total-approved" style="font-size: 1.8em; font-weight: bold; margin: 5px 0; color: #5cb85c;">0</p></div>
+                </div>
+                <h3>جدول توزيع الحصة</h3><table id="distributionTable"></table>
+                <div class="button-group">
+                    <button id="exportBtn" class="btn-export">تصدير CSV</button>
+                    <button id="printBtn" class="btn-print">طباعة</button>
+                    <button id="resetBtn" class="btn-reset">بحث جديد</button>
+                </div>
             </div>
+        </div>
         <div id="messageArea"></div>
 
         <footer>
@@ -84,62 +108,19 @@
         </footer>
     </div>
     
-    <template id="search-template">
-        </template>
-
-    <script>
-        // All variables and functions (sanitizeString, formatNumber, etc.) remain the same
-        // ...
-        
-        // *** MODIFIED STARTUP LOGIC ***
-        window.onload = async () => {
-            document.getElementById('clearCacheBtn').addEventListener('click', clearCache);
-            
-            const dirStatus = document.getElementById('directorateStatus');
-            const minStatus = document.getElementById('ministryStatus');
-            
-            try {
-                await openDb();
-                
-                dirStatus.innerText = "الحالة: جارِ البحث في الذاكرة...";
-                minStatus.innerText = "الحالة: جارِ البحث في الذاكرة...";
-
-                const dirBlob = await loadFileFromDb('directorate');
-                const minBlob = await loadFileFromDb('ministry');
-                
-                let dirLoaded = false, minLoaded = false;
-                
-                if (dirBlob) {
-                    await processFile(dirBlob, 'directorate', 'ذاكرة المتصفح');
-                    dirLoaded = true;
-                } else {
-                    dirStatus.innerText = "الحالة: لم يتم التحميل";
-                }
-
-                if (minBlob) {
-                    await processFile(minBlob, 'ministry', 'ذاكرة المتصفح');
-                    minLoaded = true;
-                } else {
-                    minStatus.innerText = "الحالة: لم يتم التحميل";
-                }
-
-            } catch (error) {
-                console.error("Startup Error:", error);
-                dirStatus.innerText = "الحالة: خطأ في تحميل الذاكرة.";
-                minStatus.innerText = "الحالة: خطأ في تحميل الذاكرة.";
-            }
-        };
-
-        // All other functions (loadFileFromRepo, processFile, performSearch, etc.) remain the same...
-        // ... (The full script from the previous version is assumed to be here, with no changes needed in them)
-    </script>
-    
     <script>
         let directorateData = [], ministryData = new Map(), uniqueItems = new Map(), lastSearchResults = [];
 
-        // --- IndexedDB Functions for Caching ---
         const dbName = 'FileCacheDB_v2';
         let db;
+
+        const sanitizeString = (str) => String(str || '').replace(/\s+/g, ' ').trim();
+        const formatNumber = (num) => Math.round(Number(num)).toLocaleString('en-US');
+
+        const fileConfigs = {
+            directorate: { statusEl: 'directorateStatus', processor: processDirectorateData, name: 'احتياج ٢٠٢٥.xlsx' },
+            ministry: { statusEl: 'ministryStatus', processor: processMinistryData, name: 'المعتمد ٢٠٢٥.xlsx' }
+        };
 
         function openDb() {
             return new Promise((resolve, reject) => {
@@ -147,19 +128,6 @@
                 request.onerror = () => reject("Error opening DB");
                 request.onsuccess = (event) => { db = event.target.result; resolve(db); };
                 request.onupgradeneeded = (event) => { event.target.result.createObjectStore('files', { keyPath: 'id' }); };
-            });
-        }
-
-        function saveFileToDb(id, blob) {
-            const transaction = db.transaction(['files'], 'readwrite');
-            transaction.objectStore('files').put({ id, blob });
-        }
-
-        function loadFileFromDb(id) {
-            return new Promise((resolve) => {
-                db.transaction('files').objectStore('files').get(id).onsuccess = (event) => {
-                    resolve(event.target.result ? event.target.result.blob : null);
-                };
             });
         }
         
@@ -174,36 +142,42 @@
                 window.location.reload();
             }
         }
-        
-        const sanitizeString = (str) => String(str || '').replace(/\s+/g, ' ').trim();
-        const formatNumber = (num) => Math.round(Number(num)).toLocaleString('en-US');
-
-        const fileConfigs = {
-            directorate: { name: 'احتياج ٢٠٢٥.xlsx', statusEl: 'directorateStatus', processor: processDirectorateData },
-            ministry: { name: 'المعتمد ٢٠٢٥.xlsx', statusEl: 'ministryStatus', processor: processMinistryData }
-        };
 
         window.onload = async () => {
             document.getElementById('clearCacheBtn').addEventListener('click', clearCache);
-            const dirStatus = document.getElementById('directorateStatus');
-            const minStatus = document.getElementById('ministryStatus');
             try {
                 await openDb();
-                dirStatus.innerText = "الحالة: جارِ البحث في الذاكرة...";
-                minStatus.innerText = "الحالة: جارِ البحث في الذاكرة...";
-                const dirBlob = await loadFileFromDb('directorate');
-                const minBlob = await loadFileFromDb('ministry');
-                if (dirBlob) await processFile(dirBlob, 'directorate', 'ذاكرة المتصفح');
-                else dirStatus.innerText = "الحالة: لم يتم التحميل";
-                if (minBlob) await processFile(minBlob, 'ministry', 'ذاكرة المتصفح');
-                else minStatus.innerText = "الحالة: لم يتم التحميل";
+                await loadFileFromDb('directorate');
+                await loadFileFromDb('ministry');
             } catch (error) {
                 console.error("Startup Error:", error);
-                dirStatus.innerText = "الحالة: خطأ في تحميل الذاكرة.";
-                minStatus.innerText = "الحالة: خطأ في تحميل الذاكرة.";
+                document.getElementById('directorateStatus').innerText = "الحالة: خطأ في الذاكرة.";
+                document.getElementById('ministryStatus').innerText = "الحالة: خطأ في الذاكرة.";
             }
         };
 
+        async function loadFileFromDb(type) {
+            const statusEl = document.getElementById(fileConfigs[type].statusEl);
+            statusEl.innerText = `الحالة: جارِ البحث في الذاكرة...`;
+            const blob = await new Promise((resolve) => {
+                if (!db) { resolve(null); return; }
+                const transaction = db.transaction(['files'], 'readonly');
+                if (!db.objectStoreNames.contains('files')) { resolve(null); return; }
+                const request = transaction.objectStore('files').get(type);
+                request.onsuccess = (event) => resolve(event.target.result ? event.target.result.blob : null);
+                request.onerror = () => resolve(null);
+            });
+
+            if (blob) await processFile(blob, type, 'ذاكرة المتصفح');
+            else statusEl.innerText = "الحالة: لم يتم التحميل";
+        }
+
+        async function saveFileToDb(id, blob) {
+            if (!db) return;
+            const transaction = db.transaction(['files'], 'readwrite');
+            transaction.objectStore('files').put({ id, blob });
+        }
+        
         async function loadFileFromRepo(type) {
             const config = fileConfigs[type];
             const statusEl = document.getElementById(config.statusEl);
@@ -213,17 +187,17 @@
                 if (!response.ok) throw new Error(`لم يتم العثور على الملف "${config.name}"`);
                 const blob = await response.blob();
                 await processFile(blob, type, 'المستودع');
-                saveFileToDb(type, blob);
+                await saveFileToDb(type, blob);
             } catch (e) {
                 statusEl.innerText = `الحالة: فشل التحميل. ${e.message}`;
             }
         }
-
+        
         async function loadFileFromLocal(inputElement, type) {
             if (!inputElement.files.length) return;
             const file = inputElement.files[0];
             await processFile(file, type, 'الجهاز المحلي');
-            saveFileToDb(type, file);
+            await saveFileToDb(type, file);
         }
 
         async function processFile(fileBlob, type, source) {
@@ -248,23 +222,71 @@
         });
 
         function processDirectorateData(workbook) {
-            // This function's logic remains the same
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const sheetAsArray = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+            const mainHeaderRowIndex = sheetAsArray.findIndex(row => row.some(cell => sanitizeString(cell) === 'NATIONAL CODE'));
+            if (mainHeaderRowIndex === -1) throw new Error("لم يتم العثور على 'NATIONAL CODE'");
+            const mainHeaders = sheetAsArray[mainHeaderRowIndex].map(h => sanitizeString(h));
+            const institutionHeaders = (sheetAsArray[mainHeaderRowIndex - 1] || []).map(h => sanitizeString(h));
+            const itemCodeIndex = mainHeaders.indexOf('NATIONAL CODE');
+            const itemNameIndex = mainHeaders.indexOf('ITEMS');
+            const institutionColumns = institutionHeaders.map((h, i) => ({h, i})).filter(c => c.h.startsWith('احتياج') && !c.h.startsWith('احتياج عام') && c.h !== 'احتياج 2025');
+            if (institutionColumns.length === 0) throw new Error("لم يتم العثور على أعمدة احتياج.");
+            
+            const transformedData = [];
+            uniqueItems.clear();
+            const dataRows = sheetAsArray.slice(mainHeaderRowIndex + 1);
+            dataRows.forEach(row => {
+                const itemCode = sanitizeString(row[itemCodeIndex]);
+                const itemName = sanitizeString(row[itemNameIndex]);
+                if (!itemCode || !itemName) return;
+                if (!uniqueItems.has(itemCode)) { uniqueItems.set(itemCode, itemName); }
+                institutionColumns.forEach(col => {
+                    transformedData.push({
+                        institution: col.h, item_code: itemCode,
+                        item_name: itemName, quantity_requested: Number(row[col.i]) || 0
+                    });
+                });
+            });
+            directorateData = transformedData;
         }
+
         function processMinistryData(workbook) {
-            // This function's logic remains the same
+            const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+            const sheetAsArray = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" });
+            const mainHeaderRowIndex = sheetAsArray.findIndex(row => row.some(cell => sanitizeString(cell) === 'NATIONAL CODE'));
+            if (mainHeaderRowIndex === -1) throw new Error("لم يتم العثور على 'NATIONAL CODE'");
+            const mainHeaders = sheetAsArray[mainHeaderRowIndex].map(h => sanitizeString(h));
+            const topHeaders = (sheetAsArray[mainHeaderRowIndex - 1] || []).map(h => sanitizeString(h));
+            const itemCodeIndex = mainHeaders.indexOf('NATIONAL CODE');
+            const approvedQtyCol = topHeaders.map((h, i) => ({h, i})).find(c=>c.h.includes('دائرة صحة المثنى'));
+            if (!approvedQtyCol) throw new Error("لم يتم العثور على عمود 'دائرة صحة المثنى'.");
+            
+            ministryData.clear();
+            const dataRows = sheetAsArray.slice(mainHeaderRowIndex + 1);
+            dataRows.forEach(row => {
+                const ic = sanitizeString(row[itemCodeIndex]);
+                if (ic) ministryData.set(ic, Number(row[approvedQtyCol.i]) || 0);
+            });
         }
 
         function checkIfReady() {
             if (directorateData.length > 0 && ministryData.size > 0) {
-                const step2 = document.getElementById('step2');
-                step2.innerHTML = document.getElementById('search-template').innerHTML;
-                step2.classList.remove('hidden');
-                document.getElementById('step1').classList.add('hidden'); // Hide step 1 when ready
-                document.getElementById('searchBtn').addEventListener('click', performSearch);
-                document.getElementById('searchInput').addEventListener('keyup', (e) => { if (e.key === 'Enter') performSearch(); });
-                document.getElementById('exportBtn').addEventListener('click', exportToCsv);
-                document.getElementById('printBtn').addEventListener('click', () => window.print());
-                document.getElementById('resetBtn').addEventListener('click', resetSearch);
+                const searchInput = document.getElementById('searchInput');
+                const searchBtn = document.getElementById('searchBtn');
+                searchInput.disabled = false;
+                searchInput.placeholder = 'أدخل اسم المادة أو الرمز الوطني...';
+                searchBtn.disabled = false;
+                
+                if (!searchBtn.dataset.listenerAttached) {
+                    searchBtn.addEventListener('click', performSearch);
+                    searchInput.addEventListener('keyup', (e) => { if (e.key === 'Enter') performSearch(); });
+                    document.getElementById('exportBtn').addEventListener('click', exportToCsv);
+                    document.getElementById('printBtn').addEventListener('click', () => window.print());
+                    document.getElementById('resetBtn').addEventListener('click', resetSearch);
+                    searchBtn.dataset.listenerAttached = 'true';
+                }
+
                 const datalist = document.getElementById('itemsDatalist');
                 datalist.innerHTML = '';
                 for (const [code, name] of uniqueItems.entries()) {
@@ -277,19 +299,94 @@
         }
         
         function resetSearch() {
-            document.getElementById('step1').classList.remove('hidden');
-            document.getElementById('step2').classList.add('hidden');
             const searchInput = document.getElementById('searchInput');
-            if (searchInput) searchInput.value = '';
+            const resultsDiv = document.getElementById('results');
+            searchInput.value = '';
+            resultsDiv.classList.add('hidden');
             lastSearchResults = [];
+            searchInput.focus();
         }
 
         function performSearch() {
-            // This function's logic remains the same
+            const searchInput = document.getElementById('searchInput');
+            const inputValue = sanitizeString(searchInput.value);
+            const resultsDiv = document.getElementById('results');
+            if (!inputValue) return;
+            let definitiveCode = null;
+            const options = document.getElementById('itemsDatalist').options;
+            for (let i = 0; i < options.length; i++) {
+                if (sanitizeString(options[i].value) === inputValue) {
+                    definitiveCode = sanitizeString(options[i].dataset.code);
+                    break;
+                }
+            }
+            let relevantEntries;
+            if (definitiveCode) {
+                relevantEntries = directorateData.filter(row => row.item_code === definitiveCode);
+            } else {
+                const query = inputValue.toLowerCase();
+                relevantEntries = directorateData.filter(row => row.item_code.toLowerCase().includes(query) || (row.item_name && row.item_name.toLowerCase().includes(query)));
+            }
+            lastSearchResults = relevantEntries;
+            if (relevantEntries.length === 0) {
+                resultsDiv.classList.add('hidden');
+                alert("لم يتم العثور على المادة المطلوبة.");
+                return;
+            }
+            const itemCode = relevantEntries[0].item_code;
+            const itemName = relevantEntries[0].item_name;
+            const totalRequested = relevantEntries.reduce((sum, row) => sum + row.quantity_requested, 0);
+            const totalApproved = ministryData.get(itemCode) || 0;
+            resultsDiv.classList.remove('hidden');
+            document.getElementById('itemName').innerHTML = `نتائج البحث لـ: <strong>${itemName}</strong> (الرمز: ${itemCode})`;
+            document.getElementById('total-requested').innerText = formatNumber(totalRequested);
+            document.getElementById('total-approved').innerText = formatNumber(totalApproved);
+            const table = document.getElementById('distributionTable');
+            table.innerHTML = `<thead><tr><th>المؤسسة الصحية</th><th>الكمية المطلوبة</th><th>النسبة من الإجمالي</th><th>الحصة المعتمدة</th></tr></thead><tbody></tbody>`;
+            const tbody = table.querySelector('tbody');
+            relevantEntries.forEach(entry => {
+                const requested = entry.quantity_requested;
+                const percentage = (totalRequested > 0) ? (requested / totalRequested) * 100 : 0;
+                const share = (totalRequested > 0) ? (requested / totalRequested) * totalApproved : 0;
+                tbody.innerHTML += `<tr>
+                    <td>${entry.institution}</td>
+                    <td>${formatNumber(requested)}</td>
+                    <td>${percentage.toFixed(2)}%</td>
+                    <td><b>${formatNumber(share)}</b></td>
+                </tr>`;
+            });
         }
 
         function exportToCsv() {
-            // This function's logic remains the same
+            if (lastSearchResults.length === 0) {
+                alert("لا توجد بيانات لتصديرها."); return;
+            }
+            const itemCode = lastSearchResults[0].item_code;
+            const itemName = lastSearchResults[0].item_name;
+            const totalRequested = lastSearchResults.reduce((sum, row) => sum + row.quantity_requested, 0);
+            const totalApproved = ministryData.get(itemCode) || 0;
+            let csvContent = `اسم المادة,"${itemName}"\n`;
+            csvContent += `الرمز الوطني,"${itemCode}"\n`;
+            csvContent += `إجمالي الكمية المطلوبة,${totalRequested}\n`;
+            csvContent += `إجمالي الكمية المعتمدة,${totalApproved}\n\n`;
+            const headers = ["المؤسسة الصحية", "الكمية المطلوبة", "النسبة من الإجمالي", "الحصة المعتمدة"];
+            csvContent += headers.join(',') + '\n';
+            lastSearchResults.forEach(entry => {
+                const requested = entry.quantity_requested;
+                const percentage = (totalRequested > 0) ? (requested / totalRequested) * 100 : 0;
+                const share = (totalRequested > 0) ? (requested / totalRequested) * totalApproved : 0;
+                csvContent += `"${entry.institution}",${requested},"${percentage.toFixed(2)}%",${Math.round(share)}\n`;
+            });
+            const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            const fileName = `${sanitizeString(itemName)}.csv`;
+            link.setAttribute('download', fileName);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
     </script>
 </body>
